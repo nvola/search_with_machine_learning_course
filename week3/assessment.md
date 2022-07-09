@@ -4,6 +4,7 @@ To assess your project work, you should be able to answer the following question
 ## For query classification:
 
 **How many unique categories did you see in your rolled up training data when you set the minimum number of queries per category to 1000? To 10000?**
+
 Using 1000 as the minimum reduced the number of categories to 151, this is a lot fewer than the 400 the project instructions suggested, so I believe I may have had a more aggressive pruning strategy. Rather than doing what the instructions seem to suggest, it rolls up any category with fewer than the minimum queries in no particular order.
 
 ```
