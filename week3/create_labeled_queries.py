@@ -149,7 +149,7 @@ def main(min_queries, output_file_name, normalize_queries):
                 )
             else:
                 LOGGER.info(
-                    "{len(low_count_categories)} categories with fewer than "
+                    f"{len(low_count_categories)} categories with fewer than "
                     f"{min_queries} unique queries at depth of {curr_depth}"
                 )
                 df["rolled_category"] = df["rolled_category"].apply(

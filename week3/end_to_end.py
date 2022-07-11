@@ -5,7 +5,6 @@ from pathlib import Path
 
 import fasttext
 import pandas as pd
-from create_labeled_queries import main as create_labeled_queries
 from sklearn.model_selection import train_test_split
 
 ROOT = Path.cwd()
@@ -14,6 +13,7 @@ DATA_DIR = Path(DIR, "data")
 MODEL_DIR = Path(DIR, "models")
 
 sys.path.append(DIR)
+from create_labeled_queries import main as create_labeled_queries
 
 FORMAT = "%(name)s -- %(asctime)s -- %(message)s"
 LOGGER = logging.getLogger(__name__)
@@ -38,7 +38,10 @@ def main(**kwargs):
         escapechar="\\",
         quoting=csv.QUOTE_NONE,
     )
-    if kwargs["min_queries"] != 1:
+
+    min_count = data.groupby("category").count().values.min()
+
+    if min_count > 1:
         # stratify by category if possible
         # only possible where there are 2 or more values per category
         cat_map = {
