@@ -22,6 +22,14 @@ logging.basicConfig(format='%(levelname)s:%(message)s')
 MODEL_FPATH = Path(Path.cwd(), "week3", "models", "query_classifier.bin")
 QC_MODEL = fasttext.load_model(str(MODEL_FPATH))
 
+def normalize_query(query):
+    # remove nonalphanum characters except space and underscore
+    # and lowercase
+    norm_query = " ".join([x.lower() for x in query.split(" ") if x.isalnum()])
+    # trim excess space
+    norm_query = re.sub(" +", " ", norm_query)
+    return norm_query
+
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
         click_group):  # total impressions isn't currently used, but it mayb worthwhile at some point
@@ -206,7 +214,7 @@ def create_query(user_query, click_prior_query, filters, term_boosts=[], sort="_
 
 def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", use_synonyms=False, use_filters=False, use_boosts=False):
     #### W3: classify the query
-    query_pred = QC_MODEL.predict(user_query, k=3)
+    query_pred = QC_MODEL.predict(normalize_query(user_query), k=3)
     filter_labels = []
     for l, p in zip(query_pred[0], query_pred[1]):
         if p > 0.3:
