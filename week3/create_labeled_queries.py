@@ -36,6 +36,15 @@ def remap_categories(cat, remap_list):
     else:
         return cat
 
+def get_depth(category, mapper, root_category_id):
+    curr_id = category
+    depth = 0
+    while curr_id != root_category_id:
+        new_id = mapper[curr_id]
+        curr_id = new_id
+        depth += 1
+    return depth
+
 
 def main(min_queries, output_file_name, normalize_queries):
     # The root category, named Best Buy with id cat00000, doesn't have a parent.
@@ -48,6 +57,7 @@ def main(min_queries, output_file_name, normalize_queries):
     LOGGER.info("Parsing category XML")
     categories = []
     parents = []
+    depth = [0]
     for child in root:
         id = child.find('id').text
         cat_path = child.find('path')
@@ -57,9 +67,10 @@ def main(min_queries, output_file_name, normalize_queries):
             categories.append(leaf_id)
             parents.append(cat_path_ids[-2])
     parents_df = pd.DataFrame(list(zip(categories, parents)), columns =['category', 'parent'])
-    
+
     global parent_map
     parent_map = dict(zip(parents_df["category"], parents_df["parent"]))
+    parents_df["depth"] = parents_df["category"].apply(get_depth, mapper=parent_map, root_category_id=root_category_id)
 
     # Read the training data into pandas, only keeping queries with non-root categories in our category tree.
     LOGGER.info("Reading training data")
@@ -75,12 +86,21 @@ def main(min_queries, output_file_name, normalize_queries):
     else:
         df["normalized_query"] = df["query"].copy()
 
+    def depth_checker(category, root_category_id):
+        curr_id = category
+        while curr_id != root_category_id:
+            new_id = parent_map[curr_id]
+            curr_id = new_id
+            print(curr_id)
+
     # IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
     if min_queries > 1:
         LOGGER.info("Pruning categories")
-        acceptable = False
-        while not acceptable:
-            counter = df.groupby("rolled_category").agg({"normalized_query": "nunique"})
+
+        curr_depth = parents_df["depth"].max()
+        while curr_depth > 0:
+            cats_at_depth = parents_df[parents_df.depth == curr_depth].category.tolist()
+            counter = df[df.category.isin(cats_at_depth)].groupby("rolled_category").agg({"normalized_query": "nunique"})
             counter = counter.rename(columns={"normalized_query": "nunique_queries"}).reset_index()
             low_count_categories = counter[counter["nunique_queries"] < min_queries]["rolled_category"].to_list()
 
@@ -92,8 +112,10 @@ def main(min_queries, output_file_name, normalize_queries):
                 LOGGER.info(f"All categories have at least {min_queries} unique queries")
                 acceptable = True
             else:
-                LOGGER.info(f"{len(low_count_categories)} categories with fewer than {min_queries} unique queries")
+                LOGGER.info(f"{len(low_count_categories)} categories with fewer than {min_queries} unique queries at depth of {curr_depth}")
                 df["rolled_category"] = df["rolled_category"].apply(remap_categories, remap_list=low_count_categories)
+            
+            curr_depth -= 1
 
     # replace old category column with rolled up category column
     df = df.drop(columns=["category", "query"])
