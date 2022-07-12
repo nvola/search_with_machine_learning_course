@@ -11,11 +11,24 @@ from urllib.parse import urljoin
 import pandas as pd
 import fileinput
 import logging
+import fasttext
+from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+MODEL_FPATH = Path(Path.cwd(), "week3", "models", "query_classifier.bin")
+QC_MODEL = fasttext.load_model(str(MODEL_FPATH))
+
+def normalize_query(query):
+    # remove nonalphanum characters except space and underscore
+    # and lowercase
+    norm_query = " ".join([x.lower() for x in query.split(" ") if x.isalnum()])
+    # trim excess space
+    norm_query = re.sub(" +", " ", norm_query)
+    return norm_query
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -49,8 +62,8 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, synonyms=False):
-    match_field = "name" if not synonyms else "name.synonyms"
+def create_query(user_query, click_prior_query, filters, term_boosts=[], sort="_score", sortDir="desc", size=10, source=None, use_synonyms=False):
+    match_field = "name" if not use_synonyms else "name.synonyms"
     query_obj = {
         'size': size,
         "sort": [
@@ -110,7 +123,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                         "minimum_should_match": "2<75%"
                                     }
                                 }
-                            }
+                            },
                         ],
                         "minimum_should_match": 1,
                         "filter": filters  #
@@ -168,6 +181,18 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             }
         }
     }
+
+    if term_boosts is not None:
+        for term_boost in term_boosts:
+            query_obj["query"]["function_score"]["query"]["bool"]["should"].append(
+                {
+                    "terms": {
+                        term_boost["field"]: term_boost["values"],
+                        "boost": term_boost["boost"],
+                    }
+                }
+            )
+
     if click_prior_query is not None and click_prior_query != "":
         query_obj["query"]["function_score"]["query"]["bool"]["should"].append({
             "query_string": {
@@ -187,11 +212,51 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", synonyms=False):
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", use_synonyms=False, use_filters=False, use_boosts=False):
     #### W3: classify the query
+    query_pred = QC_MODEL.predict(normalize_query(user_query), k=3)
+    filter_labels = []
+    for l, p in zip(query_pred[0], query_pred[1]):
+        if p > 0.3:
+            print(f"pred label {l} with prob {p}")
+            filter_labels.append(l[9:])
     #### W3: create filters and boosts
+    if (use_filters) & (len(filter_labels) > 0):
+        filters= [{
+            "terms": {
+                "categoryPathIds": filter_labels
+            }
+        }
+        ]
+    else:
+        filters = None
+
+    if (use_boosts) & (len(filter_labels) > 0):
+        term_boosts = [
+            {
+                "field": "categoryPathIds",
+                "values": filter_labels,
+                "boost": 0.05,
+            },
+            {
+                "field": "categoryLeaf",
+                "values":[filter_labels[0]],
+                "boost": 0.025,
+            }
+        ]
+    else:
+        term_boosts = None
+
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], synonyms=synonyms)
+    query_obj = create_query(user_query, click_prior_query=None, filters=filters, term_boosts=term_boosts, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], use_synonyms=use_synonyms)
+    
+    print(query_obj)
+    # logger.info(query_obj)
+    response = client.search(query_obj, index=index)
+    if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
+        hits = response['hits']['hits']
+        # print(json.dumps(response, indent=2))
+        print(f"total hits: {response['hits']['total']}, max score: {response['hits']['max_score']}")
 
 
 if __name__ == "__main__":
@@ -209,8 +274,20 @@ if __name__ == "__main__":
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
     general.add_argument(
-        '--synonyms',
+        '--use_synonyms',
         help='If true, query name.synonyms field instead of name',
+        action="store_true",
+        default=False,
+    )
+    general.add_argument(
+        '--use_filters',
+        help='If true, use categoryPathIds filters',
+        action="store_true",
+        default=False,
+    )
+    general.add_argument(
+        '--use_boosts',
+        help='If true, use categoryPathIds boosts',
         action="store_true",
         default=False,
     )
@@ -248,7 +325,8 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, synonyms=args.synonyms)
+        search(client=opensearch, user_query=query, index=index_name, use_synonyms=args.use_synonyms, use_filters=args.use_filters, use_boosts=args.use_boosts)
+        # search(client=opensearch, user_query=query, index=index_name, use_synonyms=False, use_filters=True)
 
         print(query_prompt)
 
