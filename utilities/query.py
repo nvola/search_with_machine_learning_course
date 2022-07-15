@@ -33,7 +33,7 @@ def normalize_query(query):
     return norm_query
 
 
-def create_vector_query(model, query_string, n_results):
+def create_vector_query(model, query_string, n_results, filters=None):
     embedding = model.encode([query_string])
 
     knn_query = {
@@ -47,6 +47,9 @@ def create_vector_query(model, query_string, n_results):
             }
         }
     }
+
+    if filters is not None:
+        knn_query["post_filter"] = filters[0]
 
     return knn_query
 
@@ -234,11 +237,12 @@ def create_query(user_query, click_prior_query, filters, term_boosts=[], sort="_
 
 def search(client, user_query, index="bbuy_products", model=None, sort="_score", sortDir="desc", use_synonyms=False, use_filters=False, use_boosts=False, use_vectors=False, k=3):
     #### W3: classify the query
-    query_pred = QC_MODEL.predict(normalize_query(user_query), k=3)
     filter_labels = []
-    for l, p in zip(query_pred[0], query_pred[1]):
-        if p > 0.3:
-            filter_labels.append(l[9:])
+    if use_filters:
+        query_pred = QC_MODEL.predict(normalize_query(user_query), k=3)
+        for l, p in zip(query_pred[0], query_pred[1]):
+            if p > 0.3:
+                filter_labels.append(l[9:])
     #### W3: create filters and boosts
     if (use_filters) & (len(filter_labels) > 0):
         filters= [{
@@ -268,21 +272,44 @@ def search(client, user_query, index="bbuy_products", model=None, sort="_score",
 
     # Note: you may also want to modify the `create_query` method above
     if use_vectors:
-        query_obj = create_vector_query(model, user_query, k)
+        query_obj = create_vector_query(model, user_query, k, filters)
     else:
         query_obj = create_query(user_query, click_prior_query=None, filters=filters, term_boosts=term_boosts, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], use_synonyms=use_synonyms)
     
     # print(query_obj)
     # logger.info(query_obj)
+    def check_valid_response(response):
+        return response and response['hits']['hits'] and len(response['hits']['hits']) > 0
+
     response = client.search(query_obj, index=index)
-    if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
+    valid_response = check_valid_response(response)
+    if valid_response:
         hits = response['hits']['hits']
         # print(json.dumps(response, indent=2))
-        print(f"total hits: {response['hits']['total']}['value'], max score: {response['hits']['max_score']}\n")
-        
-        fields = ['productId', 'sku', 'name', 'type', 'shortDescription', 'department']
+        total_hits = response['hits']['total']['value']
+        print(f"total hits: {total_hits}, max score: {response['hits']['max_score']}\n")
+        print(f"returned hits {len(hits)}")
+
+    if (valid_response) & (use_filters) & (use_vectors) & (len(hits) < k) & (total_hits > k):
+        print("not enough hits generated, trying again")
+        # retry query if filtering returned fewer results than requested
+        # but more results exist
+        enough_results = False
+        new_k = k 
+
+        while not enough_results:
+            new_k = k * 2
+            query_obj = create_vector_query(model, user_query, new_k, filters)
+            response = opensearch.search(query_obj, index=index_name)
+            if check_valid_response(response):
+                new_hits = response['hits']['total']['value']
+                if (new_hits == k) or (new_hits == total_hits):
+                    enough_results = True
+
+    if valid_response:
+        fields = ['productId', 'sku', 'name', 'type', 'shortDescription', 'department', 'categoryPathIds']
         for hit in hits:
-            print({field: hit["_source"][field][0] for field in fields})
+            print({field: hit["_source"][field] for field in fields})
             print("\n")
 
 
@@ -328,6 +355,7 @@ if __name__ == "__main__":
         '--k',
         help='Number of nearest neighbors to pull for knn',
         default=3,
+        type=int,
     )
 
     args = parser.parse_args()
