@@ -149,7 +149,7 @@ def index_file(file, index_name, reduced=False):
             # create name embeddings and add to doc
             name_embeddings = model.encode(names)
             for d, n in zip(docs, name_embeddings):
-                d['_source']['name_embedding'] = n
+                d['_source']['name_embedding'] = n.tolist()
 
             bulk(client, docs, request_timeout=60)
             logger.info(f'{docs_indexed} documents indexed')
