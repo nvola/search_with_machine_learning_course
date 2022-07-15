@@ -9,10 +9,12 @@ import os
 from getpass import getpass
 from urllib.parse import urljoin
 import pandas as pd
+import re
 import fileinput
 import logging
 import fasttext
 from pathlib import Path
+from sentence_transformers import SentenceTransformer
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,24 @@ def normalize_query(query):
     # trim excess space
     norm_query = re.sub(" +", " ", norm_query)
     return norm_query
+
+
+def create_vector_query(model, query_string, n_results):
+    embedding = model.encode([query_string])
+
+    knn_query = {
+        "size": n_results,
+        "query": {
+            "knn": {
+                "name_embedding": {
+                    "vector": embedding[0].tolist(),
+                    "k": n_results,
+                }
+            }
+        }
+    }
+
+    return knn_query
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -212,13 +232,12 @@ def create_query(user_query, click_prior_query, filters, term_boosts=[], sort="_
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", use_synonyms=False, use_filters=False, use_boosts=False):
+def search(client, user_query, index="bbuy_products", model=None, sort="_score", sortDir="desc", use_synonyms=False, use_filters=False, use_boosts=False, use_vectors=False, k=3):
     #### W3: classify the query
     query_pred = QC_MODEL.predict(normalize_query(user_query), k=3)
     filter_labels = []
     for l, p in zip(query_pred[0], query_pred[1]):
         if p > 0.3:
-            print(f"pred label {l} with prob {p}")
             filter_labels.append(l[9:])
     #### W3: create filters and boosts
     if (use_filters) & (len(filter_labels) > 0):
@@ -248,15 +267,23 @@ def search(client, user_query, index="bbuy_products", sort="_score", sortDir="de
         term_boosts = None
 
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=filters, term_boosts=term_boosts, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], use_synonyms=use_synonyms)
+    if use_vectors:
+        query_obj = create_vector_query(model, user_query, k)
+    else:
+        query_obj = create_query(user_query, click_prior_query=None, filters=filters, term_boosts=term_boosts, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], use_synonyms=use_synonyms)
     
-    print(query_obj)
+    # print(query_obj)
     # logger.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
         hits = response['hits']['hits']
         # print(json.dumps(response, indent=2))
-        print(f"total hits: {response['hits']['total']}, max score: {response['hits']['max_score']}")
+        print(f"total hits: {response['hits']['total']}['value'], max score: {response['hits']['max_score']}\n")
+        
+        fields = ['productId', 'sku', 'name', 'type', 'shortDescription', 'department']
+        for hit in hits:
+            print({field: hit["_source"][field][0] for field in fields})
+            print("\n")
 
 
 if __name__ == "__main__":
@@ -291,6 +318,17 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    general.add_argument(
+        '--vector',
+        help='If true, use vector query',
+        action="store_true",
+        default=False,
+    )
+    general.add_argument(
+        '--k',
+        help='Number of nearest neighbors to pull for knn',
+        default=3,
+    )
 
     args = parser.parse_args()
 
@@ -321,12 +359,27 @@ if __name__ == "__main__":
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
     print(query_prompt)
     import sys 
+
+    if args.vector:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+    else:
+        model = None
+
     for line in sys.stdin:
         query = line.rstrip()
         if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, use_synonyms=args.use_synonyms, use_filters=args.use_filters, use_boosts=args.use_boosts)
-        # search(client=opensearch, user_query=query, index=index_name, use_synonyms=False, use_filters=True)
+        search(
+            client=opensearch,
+            user_query=query,
+            index=index_name,
+            model=model,
+            use_synonyms=args.use_synonyms,
+            use_filters=args.use_filters,
+            use_boosts=args.use_boosts,
+            use_vectors=args.vector,
+            k=args.k
+        )
 
         print(query_prompt)
 
